@@ -13,9 +13,10 @@ repo_root = os.path.dirname(os.path.abspath(__file__))
 # cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 cuda_gemm = load(
     name='cuda_gemm',
-    sources=['main.cpp', 'gemm_cute.cu'],
+    sources=['main.cpp', 'gemm_cutlass.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass', 'examples', 'common'),
         os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
     ],
     extra_cuda_cflags=['-O2', '-use_fast_math'],
@@ -51,4 +52,4 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(C.size())
 print(C_cuda.size())
 
-print('values sanity check:', torch.allclose(C, C_cuda, rtol=0, atol=1e-02))
+print('values sanity check:', torch.allclose(C, C_cuda))
