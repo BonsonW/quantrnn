@@ -5,6 +5,21 @@ import tensorhue
 from torch.nn import functional as F
 from torch.utils.cpp_extension import load
 from einops import rearrange, repeat
+import os
+
+repo_root = os.path.dirname(os.path.abspath(__file__))
+
+# Load the CUDA kernel as a python module
+# cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
+cuda_gemm = load(
+    name='cuda_gemm',
+    sources=['main.cpp', 'gemm_cute.cu'],
+    extra_include_paths=[
+        os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
+    ],
+    extra_cuda_cflags=['-O2', '-use_fast_math'],
+)
 
 @torch.inference_mode()
 def gemm_ref(
@@ -12,9 +27,6 @@ def gemm_ref(
     b
 ):
     return a @ b
-
-# Load the CUDA kernel as a python module
-cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 128

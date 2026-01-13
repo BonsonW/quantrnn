@@ -39,7 +39,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
     C.contiguous();
 
     float alpha = 1.0;
-    float beta = 1.0;
+    float beta = 0.0;
 
     // create as many blocks as necessary to map all of C
     dim3 gridDim(ceil_div(M, 32), ceil_div(N, 32), 1);
