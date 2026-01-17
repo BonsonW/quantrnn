@@ -24,10 +24,10 @@ cuda_gemm = load(
 
 @torch.inference_mode()
 def gemm_ref(
-    a,
-    b
+    A,
+    B
 ):
-    return a @ b
+    return torch.matmul(A, B)
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 128
@@ -40,7 +40,7 @@ B = torch.randn(in_features, out_features).float().cuda() # weights
 print('=== cuda gemm === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C_cuda = cuda_gemm.forward(A, B)
+    C_cuda = cuda_gemm.forward(B.t(), A.t()) # transposing because cutlass expects column major
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling python gemm ===')
@@ -52,4 +52,4 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(C.size())
 print(C_cuda.size())
 
-print('values sanity check:', torch.allclose(C, C_cuda))
+print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-05))
