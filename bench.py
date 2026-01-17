@@ -34,19 +34,19 @@ batch_size = 128
 out_features = 128
 in_features = 64
 
-A = torch.randn(batch_size, in_features).cuda() # input
-B = torch.randn(in_features, out_features).cuda() # weights
-
-print('=== profiling python gemm ===')
-
-with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C = gemm_ref(A, B)
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+A = torch.randn(batch_size, in_features).float().cuda() # input
+B = torch.randn(in_features, out_features).float().cuda() # weights
 
 print('=== cuda gemm === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     C_cuda = cuda_gemm.forward(A, B)
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+
+print('=== profiling python gemm ===')
+
+with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
+    C = gemm_ref(A, B)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print(C.size())

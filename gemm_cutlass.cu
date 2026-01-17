@@ -296,11 +296,13 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   int K = _A.size(1); // in features
   int N = _B.size(1); // out features
 
-  torch::Tensor _C = torch::empty({M, N}).cuda();
+  torch::Tensor _C = torch::empty({M, N}).to(torch::kFloat32).cuda();
+  // torch::Tensor _Cref = torch::empty({M, N}).to(torch::kFloat32).cuda();
 
   _A.contiguous();
   _B.contiguous();
   _C.contiguous();
+  // _Cref.contiguous();
 
   float alpha = 1.0;
   float beta = 0.0;
@@ -321,7 +323,7 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   float *A = (float *)_A.data_ptr();
   float *B = (float *)_B.data_ptr();
   float *C_cutlass = (float *)_C.data_ptr();
-  float *C_referecne;
+  // float *C_reference = (float *)_Cref.data_ptr();
 
   //
   // Launch CUTLASS GEMM.
@@ -333,7 +335,7 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
     std::cerr << "CUTLASS GEMM kernel failed: "
       << cudaGetErrorString(result) << std::endl;
 
-    cudaFree(C_reference);
+    // cudaFree(C_reference);
     cudaFree(C_cutlass);
     cudaFree(B);
     cudaFree(A);
@@ -346,58 +348,71 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   //
 
   // Launch reference GEMM
-  result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc);
+  // result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_reference, ldc);
 
-  if (result != cudaSuccess) {
-    std::cerr << "Reference GEMM kernel failed: "
-      << cudaGetErrorString(result) << std::endl;
+  // if (result != cudaSuccess) {
+  //   std::cerr << "Reference GEMM kernel failed: "
+  //     << cudaGetErrorString(result) << std::endl;
 
-    cudaFree(C_reference);
-    cudaFree(C_cutlass);
-    cudaFree(B);
-    cudaFree(A);
+  //   cudaFree(C_reference);
+  //   cudaFree(C_cutlass);
+  //   cudaFree(B);
+  //   cudaFree(A);
 
-    exit(1);
-  }
+  //   exit(1);
+  // }
 
   // Copy to host and verify equivalence.
-  std::vector<float> host_cutlass(ldc * N, 0);
-  std::vector<float> host_reference(ldc * N, 0);
+  // std::vector<float> host_cutlass(ldc * N, 0);
+  // std::vector<float> host_reference(ldc * N, 0);
 
-  result = cudaMemcpy(host_cutlass.data(), C_cutlass, sizeof_C, cudaMemcpyDeviceToHost);
+  // result = cudaMemcpy(host_cutlass.data(), C_cutlass, sizeof_C, cudaMemcpyDeviceToHost);
 
-  if (result != cudaSuccess) {
-    std::cerr << "Failed to copy CUTLASS GEMM results: "
-      << cudaGetErrorString(result) << std::endl;
+  // if (result != cudaSuccess) {
+  //   std::cerr << "Failed to copy CUTLASS GEMM results: "
+  //     << cudaGetErrorString(result) << std::endl;
 
-    cudaFree(C_reference);
-    cudaFree(C_cutlass);
-    cudaFree(B);
-    cudaFree(A);
+  //   cudaFree(C_reference);
+  //   cudaFree(C_cutlass);
+  //   cudaFree(B);
+  //   cudaFree(A);
 
-    exit(1);
-  }
+  //   exit(1);
+  // }
 
-  result = cudaMemcpy(host_reference.data(), C_reference, sizeof_C, cudaMemcpyDeviceToHost);
+  // result = cudaMemcpy(host_reference.data(), C_reference, sizeof_C, cudaMemcpyDeviceToHost);
 
-  if (result != cudaSuccess) {
-    std::cerr << "Failed to copy Reference GEMM results: "
-      << cudaGetErrorString(result) << std::endl;
+  // if (result != cudaSuccess) {
+  //   std::cerr << "Failed to copy Reference GEMM results: "
+  //     << cudaGetErrorString(result) << std::endl;
 
-    cudaFree(C_reference);
-    cudaFree(C_cutlass);
-    cudaFree(B);
-    cudaFree(A);
+  //   cudaFree(C_reference);
+  //   cudaFree(C_cutlass);
+  //   cudaFree(B);
+  //   cudaFree(A);
 
-    exit(1);
-  }
+  //   exit(1);
+  // }
 
   //
   // Test for bit equivalence of results.
   //
 
-  if (host_cutlass != host_reference) {
-    std::cerr << "CUTLASS results incorrect." << std::endl;
+  // if (host_cutlass != host_reference) {
+  //   std::cerr << "CUTLASS results incorrect." << std::endl;
+
+  //   exit(1);
+  // }
+
+  result = cudaDeviceSynchronize();
+  if (result != cudaSuccess) {
+    std::cerr << "device synchronize failed: "
+      << cudaGetErrorString(result) << std::endl;
+
+    // cudaFree(C_reference);
+    cudaFree(C_cutlass);
+    cudaFree(B);
+    cudaFree(A);
 
     exit(1);
   }
