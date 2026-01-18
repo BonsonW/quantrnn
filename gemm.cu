@@ -3,6 +3,21 @@
 #include <cuda_runtime.h>
 #include <ATen/Functions.h>
 
+struct ScaledTensor {
+    at::Tensor values;  // int8 tensor
+    at::Tensor scale;   // float scale per slice
+};
+
+ScaledTensor quantize_tensor(const at::Tensor& t, int dim) {
+    auto fp_range = t.abs().amax(dim);
+    constexpr int levels = 256;
+    auto quant_scale = ((levels / 2) / fp_range);
+    auto quant_max = (levels / 2) - 1;
+    auto t_quant = (t * quant_scale.unsqueeze(dim)).round().clip(-quant_max, quant_max);
+    return ScaledTensor{t_quant.to(at::ScalarType::Char), quant_scale.to(at::ScalarType::Float).reciprocal_()};
+}
+
+// row major
 __global__
 void sgemm_naive(
     int M, int N, int K, float alpha, const float *A,
@@ -28,11 +43,11 @@ constexpr int ceil_div(int a, int b) {
 }
 
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
-    int M = A.size(0); // batch size
-    int K = A.size(1); // in features
-    int N = B.size(1); // out features
+    int M = A.size(0) * A.size(1); // batch * timestep size
+    int K = A.size(-1); // in features
+    int N = B.size(-1); // out features
 
-    torch::Tensor C = torch::empty({M, N}).cuda();
+    torch::Tensor C = torch::empty({A.size(0), A.size(1), N}).cuda();
 
     A.contiguous();
     B.contiguous();
