@@ -71,9 +71,9 @@ fp32 data by using NVIDIA Ampere architecture.
 // elements in input matrices.
 using ElementAccumulator = float;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = float;                        // <- data type of elements in input matrix A
-using ElementInputB = float;                        // <- data type of elements in input matrix B
-using ElementOutput = float;                        // <- data type of elements in output matrix D
+using ElementInputA = cutlass::half_t;                        // <- data type of elements in input matrix A
+using ElementInputB = cutlass::half_t;                        // <- data type of elements in input matrix B
+using ElementOutput = cutlass::half_t;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
 // Matrix A, Row Major for Matrix B and Row Major for Matrix C
@@ -140,7 +140,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   int K = B.size(0);
   int N = B.size(1);
 
-  torch::Tensor D = torch::empty({M, N}).to(torch::kFloat32).cuda(); // result
+  torch::Tensor D = torch::empty({M, N}).to(torch::kHalf).cuda(); // result
 
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = { M, N, K };
@@ -162,18 +162,24 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // Split K dimension into 1 partitions
   int split_k_slices = 1;
 
+  cutlass::half_t* ptr = reinterpret_cast<cutlass::half_t*>(A.data_ptr());
+
   cutlass::TensorRef<ElementInputA, LayoutInputA> a_ref(
-    A.data_ptr<ElementInputA>(),
+    ptr,
     LayoutInputA(K)   // leading dimension
   );
 
+  ptr = reinterpret_cast<cutlass::half_t*>(B.data_ptr());
+
   cutlass::TensorRef<ElementInputB, LayoutInputB> b_ref(
-    B.data_ptr<ElementInputB>(),
+    ptr,
     LayoutInputB(N)   // leading dimension
   );
 
+  ptr = reinterpret_cast<cutlass::half_t*>(D.data_ptr());
+
   cutlass::TensorRef<ElementOutput, LayoutOutput> d_ref(
-    D.data_ptr<ElementOutput>(),
+    ptr,
     LayoutOutput(N)   // leading dimension
   );
 
