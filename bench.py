@@ -30,13 +30,13 @@ def gemm_ref(
     return torch.matmul(A, B)
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 128
-timestep = 833
-out_features = 32
-in_features = 64
+batch_size = 2
+timestep = 4
+out_features = 4
+in_features = 3
 
-A = torch.randn(batch_size, timestep, in_features).float().cuda() # input
-B = torch.randn(in_features, out_features).float().cuda() # weights
+A = torch.arange(24).resize(batch_size, timestep, in_features).float().cuda() # input
+B = torch.arange(12).resize(in_features, out_features).float().cuda() # weights
 
 print(A.size())
 
@@ -44,7 +44,7 @@ print('=== cuda gemm === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     # C_cuda = cuda_gemm.forward(A, B)
-    C_cuda = cuda_gemm.forward(B.t(), A.permute((2, 1, 0))).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
+    C_cuda = cuda_gemm.forward(B, A).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling python gemm ===')
@@ -56,7 +56,7 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(C.size())
 print(C_cuda.size())
 
-# print(C)
-# print(C_cuda)
+print(C)
+print(C_cuda)
 
 print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-05))

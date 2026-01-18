@@ -238,13 +238,16 @@ __global__ void ReferenceGemm_kernel(
   int N,
   int K,
   float alpha,
-  float const *A,
+  int8_t const *A,
   int lda,
-  float const *B,
+  int8_t const *B,
   int ldb,
   float beta,
   float *C,
-  int ldc) {
+  int ldc,
+  float *A_scale,
+  float *B_scale
+) {
 
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   int j = threadIdx.y + blockIdx.y * blockDim.y;
@@ -256,7 +259,9 @@ __global__ void ReferenceGemm_kernel(
       accumulator += A[i + k * lda] * B[k + j * ldb];
     }
 
-    C[i + j * ldc] = alpha * accumulator + beta * C[i + j * ldc];
+    float dequant_alpha = B_scale[j] * A_scale[i];
+
+    C[i + j * ldc] = dequant_alpha * accumulator + beta * C[i + j * ldc];
   }
 }
 
@@ -266,13 +271,16 @@ cudaError_t ReferenceGemm(
   int N,
   int K,
   float alpha,
-  float const *A,
+  int8_t const *A,
   int lda,
-  float const *B,
+  int8_t const *B,
   int ldb,
   float beta,
   float *C,
-  int ldc) {
+  int ldc,
+  float *A_scale,
+  float *B_scale
+) {
 
   dim3 block(16, 16);
   dim3 grid(
@@ -280,17 +288,37 @@ cudaError_t ReferenceGemm(
     (N + block.y - 1) / block.y
   );
 
-  ReferenceGemm_kernel<<< grid, block >>>(M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
+  ReferenceGemm_kernel<<< grid, block >>>(M, N, K, alpha, A, lda, B, ldb, beta, C, ldc, A_scale, B_scale);
 
   return cudaGetLastError();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+struct ScaledTensor {
+  at::Tensor values; // int8 tensor
+  at::Tensor scale;  // float scale per slice
+};
+
+ScaledTensor quantize_tensor(const at::Tensor &t, int dim) {
+  auto fp_range = t.abs().amax(dim);
+  constexpr int levels = 256;
+  auto quant_scale = ((levels / 2) / fp_range);
+  auto quant_max = (levels / 2) - 1;
+  auto t_quant = (t * quant_scale.unsqueeze(dim)).round().clip(-quant_max, quant_max);
+  return ScaledTensor{t_quant.to(at::ScalarType::Char), quant_scale.to(at::ScalarType::Float).reciprocal_()};
+}
+
 /// Allocate several matrices in GPU device memory and call a single-precision
 /// CUTLASS GEMM kernel.
 torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   cudaError_t result;
+
+  // quantize and transpose cos its column major
+  ScaledTensor A_scaled = quantize_tensor(_A, 0);
+  ScaledTensor B_scaled = quantize_tensor(_B, -1);
+  _A = A_scaled.values.permute({1, 0});
+  _B = B_scaled.values.permute({2, 1, 0});
 
   int M = _A.size(0);
   int K = _B.size(0);
@@ -320,8 +348,10 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   size_t sizeof_C = sizeof(float) * ldc * N;
 
   // Define pointers to matrices in GPU device memory.
-  float *A = (float *)_A.data_ptr();
-  float *B = (float *)_B.data_ptr();
+  int8_t *A = (int8_t *)_A.data_ptr();
+  int8_t *B = (int8_t *)_B.data_ptr();
+  float *A_scale = (float *)A_scaled.scale.data_ptr();
+  float *B_scale = (float *)B_scaled.scale.data_ptr();
   float *C_cutlass = (float *)_C.data_ptr();
   // float *C_reference = (float *)_Cref.data_ptr();
 
@@ -329,9 +359,9 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   // Launch CUTLASS GEMM.
   //
 
-  // result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
+  result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc, A_scale, B_scale);
 
-  result = CutlassSgemmNN(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
+  // result = CutlassSgemmNN(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
 
   if (result != cudaSuccess) {
     std::cerr << "CUTLASS GEMM kernel failed: "
