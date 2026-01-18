@@ -13,7 +13,7 @@ repo_root = os.path.dirname(os.path.abspath(__file__))
 # cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 cuda_gemm = load(
     name='cuda_gemm',
-    sources=['main.cpp', 'gemm_cutlass.cu'],
+    sources=['main.cpp', 'gemm_ampere.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
@@ -30,13 +30,13 @@ def gemm_ref(
     return torch.matmul(A, B)
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 2
-timestep = 4
-out_features = 4
-in_features = 3
+batch_size = 1
+timestep = 8
+out_features = 8
+in_features = 4
 
-A = torch.arange(24).resize(batch_size, timestep, in_features).float().cuda() # input
-B = torch.arange(12).resize(in_features, out_features).float().cuda() # weights
+A = torch.arange(batch_size * timestep * in_features).resize(batch_size, timestep, in_features).float().cuda() # input
+B = torch.arange(out_features * in_features).resize(in_features, out_features).float().cuda() # weights
 
 print(A.size())
 
@@ -44,7 +44,7 @@ print('=== cuda gemm === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     # C_cuda = cuda_gemm.forward(A, B)
-    C_cuda = cuda_gemm.forward(B, A).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
+    C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling python gemm ===')
