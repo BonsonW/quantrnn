@@ -292,16 +292,16 @@ cudaError_t ReferenceGemm(
 torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   cudaError_t result;
 
-  int M = _A.size(0); // batch size
-  int K = _A.size(1); // in features
-  int N = _B.size(1); // out features
+  int M = _A.size(0);
+  int K = _B.size(0);
+  int N = _B.size(1) * _B.size(2);
 
-  torch::Tensor _C = torch::empty({M, N}).to(torch::kFloat32).cuda();
+  torch::Tensor _C = torch::empty({N, M}).to(torch::kFloat32).cuda();
   // torch::Tensor _Cref = torch::empty({M, N}).to(torch::kFloat32).cuda();
 
-  _A.contiguous();
-  _B.contiguous();
-  _C.contiguous();
+  // _A.contiguous();
+  // _B.contiguous();
+  // _C.contiguous();
   // _Cref.contiguous();
 
   float alpha = 1.0;
@@ -329,9 +329,9 @@ torch::Tensor forward(torch::Tensor _A, torch::Tensor _B) {
   // Launch CUTLASS GEMM.
   //
 
-  result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
+  // result = ReferenceGemm(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
 
-  // result = CutlassSgemmNN(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
+  result = CutlassSgemmNN(M, N, K, alpha, A, lda, B, ldb, beta, C_cutlass, ldc);
 
   if (result != cudaSuccess) {
     std::cerr << "CUTLASS GEMM kernel failed: "
