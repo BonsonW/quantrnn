@@ -49,7 +49,7 @@ fp32 data by using NVIDIA Ampere architecture.
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
-#include "epilogue_per_row_per_col_scale_simple.h"
+#include "epilogue_trt_llm.h"
 
 #include "cutlass/util/command_line.h"
 #include "cutlass/util/host_tensor.h"
@@ -58,6 +58,8 @@ fp32 data by using NVIDIA Ampere architecture.
 #include "cutlass/util/reference/host/tensor_copy.h"
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
+#include "gemm_with_epilogue_visitor.h"
+#include <cutlass/gemm/kernel/default_gemm.h>
 
 #include <torch/types.h>
 #include <cuda.h>
@@ -88,9 +90,9 @@ ScaledTensor quantize_tensor(const at::Tensor &t, int dim) {
 // elements in input matrices.
 using ElementAccumulator = int32_t;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = int8_t;                        // <- data type of elements in input matrix A
-using ElementInputB = int8_t;                        // <- data type of elements in input matrix B
+using ElementInput = int8_t;                        // <- data type of elements in input matrix
 using ElementOutput = float;                        // <- data type of elements in output matrix D
+using ElementCompute = float;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
 // Matrix A, Row Major for Matrix B and Row Major for Matrix C
@@ -99,7 +101,7 @@ using LayoutInputB = cutlass::layout::ColumnMajor;
 using LayoutOutput = cutlass::layout::RowMajor;
 
 // This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
-using MMAOp = cutlass::arch::OpClassTensorOp;
+using OperatorClass = cutlass::arch::OpClassTensorOp;
 
 // This code section describes CUDA SM architecture number
 using SmArch = cutlass::arch::Sm80;
@@ -120,13 +122,16 @@ using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 32, 64>;
 using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;
 
 // This code section describes how threadblocks are scheduled on GPU
-using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
+using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;
 
 // Number of pipelines you want to use
 constexpr int NumStages = 4;
 
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   cudaError_t result;
+
+  ScaledTensor A_quant = quantize_tensor(A, -1);
+  ScaledTensor B_quant = quantize_tensor(B, -1);
 
   int M = A.size(0) * A.size(1);
   int N = B.size(0);
@@ -138,33 +143,72 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
 
   // This code section describes the epilogue part of the kernel
   
-  using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-    ElementOutput,                                     // <- data type of output matrix
-    128 / cutlass::sizeof_bits<ElementOutput>::value,  // <- the number of elements per vectorized
-                                                       // memory access. For a byte, it's 16
-                                                       // elements. This becomes the vector width of
-                                                       // math instructions in the epilogue too
-    ElementAccumulator,                                // <- data type of accumulator
-    ElementComputeEpilogue
-  >;  // <- data type for alpha/beta in linear combination function
+  // using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+  //   ElementOutput,                                     // <- data type of output matrix
+  //   128 / cutlass::sizeof_bits<ElementOutput>::value,  // <- the number of elements per vectorized
+  //                                                      // memory access. For a byte, it's 16
+  //                                                      // elements. This becomes the vector width of
+  //                                                      // math instructions in the epilogue too
+  //   ElementAccumulator,                                // <- data type of accumulator
+  //   ElementComputeEpilogue
+  // >;  // <- data type for alpha/beta in linear combination function
 
-  using Gemm = cutlass::gemm::device::Gemm<
-    ElementInputA,
+  auto row_scales_device_ptr = (ElementCompute const*)A_quant.scale.data_ptr();
+  auto col_scales_device_ptr = (ElementCompute const*)B_quant.scale.data_ptr();
+
+  using DefaultGemmConf = typename cutlass::gemm::device::DefaultGemmConfiguration<
+    OperatorClass,
+    SmArch,
+    ElementInput,
+    ElementInput,
+    ElementOutput,
+    ElementCompute
+  >;
+  using GemmOp = typename DefaultGemmConf::Operator;
+  using EpilogueOp = typename DefaultGemmConf::EpilogueOutputOp;
+
+  using GemmKernel_ = cutlass::gemm::kernel::DefaultGemm<
+    ElementInput,
     LayoutInputA,
-    ElementInputB,
+    DefaultGemmConf::kAlignmentA,
+    ElementInput,
     LayoutInputB,
+    DefaultGemmConf::kAlignmentB,
     ElementOutput,
     LayoutOutput,
     ElementAccumulator,
-    MMAOp,
+    OperatorClass,
     SmArch,
     ShapeMMAThreadBlock,
     ShapeMMAWarp,
     ShapeMMAOp,
     EpilogueOp,
     SwizzleThreadBlock,
-    NumStages
+    NumStages,
+    true,
+    GemmOp
   >;
+
+  using AlphaColTileIterator = cutlass::epilogue::threadblock::PredicatedTileIterator<
+        cutlass::epilogue::threadblock::OutputTileOptimalThreadMap<
+            typename GemmKernel_::Epilogue::OutputTileIterator::ThreadMap::Shape,
+            typename GemmKernel_::Epilogue::OutputTileIterator::ThreadMap::Count,
+            GemmKernel_::Epilogue::OutputTileIterator::ThreadMap::kThreads,
+            GemmKernel_::Epilogue::OutputTileIterator::kElementsPerAccess, cutlass::sizeof_bits<ElementOutput>::value>,
+        ElementCompute>;
+
+    // Epilogue visitor
+    using EpilogueVisitor = typename cutlass::epilogue::threadblock::EpilogueVisitorPerRowPerCol<ShapeMMAThreadBlock,
+        GemmKernel_::kThreadCount, AlphaColTileIterator, typename GemmKernel_::Epilogue::OutputTileIterator,
+        ElementAccumulator, ElementCompute, EpilogueOp>;
+
+    /// Epilogue
+    using Epilogue = typename cutlass::epilogue::threadblock::EpilogueWithVisitorFromExistingEpilogue<EpilogueVisitor,
+        typename GemmKernel_::Epilogue>::Epilogue;
+
+    // GEMM
+    using GemmKernel
+        = cutlass::gemm::kernel::GemmWithEpilogueVisitor<typename GemmKernel_::Mma, Epilogue, SwizzleThreadBlock>;
 
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = { M, N, K };
@@ -186,16 +230,13 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // Split K dimension into 1 partitions
   int split_k_slices = 1;
 
-  ScaledTensor A_quant = quantize_tensor(A, -1);
-  ScaledTensor B_quant = quantize_tensor(B, -1);
-
-  cutlass::TensorRef<ElementInputA, LayoutInputA> a_ref(
-    A_quant.tensor.data_ptr<ElementInputA>(),
+  cutlass::TensorRef<ElementInput, LayoutInputA> a_ref(
+    A_quant.tensor.data_ptr<ElementInput>(),
     LayoutInputA(K)   // leading dimension
   );
 
-  cutlass::TensorRef<ElementInputB, LayoutInputB> b_ref(
-    B_quant.tensor.data_ptr<ElementInputB>(),
+  cutlass::TensorRef<ElementInput, LayoutInputB> b_ref(
+    B_quant.tensor.data_ptr<ElementInput>(),
     LayoutInputB(K)   // leading dimension
   );
 
