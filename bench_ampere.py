@@ -14,6 +14,7 @@ cuda_gemm = load(
     sources=['main.cpp', 'gemm_ampere.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass_ext', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
         os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
     ],

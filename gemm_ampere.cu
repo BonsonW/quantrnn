@@ -49,7 +49,6 @@ fp32 data by using NVIDIA Ampere architecture.
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
-#include "epilogue_trt_llm.h"
 
 #include "cutlass/util/command_line.h"
 #include "cutlass/util/host_tensor.h"
@@ -58,10 +57,10 @@ fp32 data by using NVIDIA Ampere architecture.
 #include "cutlass/util/reference/host/tensor_copy.h"
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
-#include "gemm_with_epilogue_visitor.h"
 #include <cutlass/gemm/kernel/default_gemm.h>
 
-#include "gemm_universal_base_compat.h"
+#include "cutlass_ext/gemm_universal_base_compat.h"
+#include "cutlass_ext/gemm_with_epilogue_visitor.h"
 
 #include <torch/types.h>
 #include <cuda.h>

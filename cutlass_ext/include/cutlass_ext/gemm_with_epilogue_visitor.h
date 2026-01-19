@@ -36,7 +36,7 @@
 #include "cutlass/semaphore.h"
 #include "cutlass/trace.h"
 
-#include "epilogue_trt_llm.h"
+#include "epilogue_per_row_per_col.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
