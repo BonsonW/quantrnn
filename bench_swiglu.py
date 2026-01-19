@@ -7,11 +7,11 @@ import os
 
 repo_root = os.path.dirname(os.path.abspath(__file__))
 
+# if the below code is hanging use this:  rm -r ~/.cache/torch_extensions/
 # Load the CUDA kernel as a python module
-# cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 cuda_gemm = load(
     name='cuda_gemm',
-    sources=['main.cpp', 'gemm_ampere.cu'],
+    sources=['main.cpp', 'fused_swiglu.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
@@ -22,33 +22,34 @@ cuda_gemm = load(
 
 @torch.inference_mode()
 def gemm_ref(
-    A,
-    B
+    x,
+    w
 ):
-    return torch.matmul(A, B)
+    t = x @ w.t()
+    chunks = t.chunk(2, -1)
+    y = chunks[0]
+    gate = chunks[1]
+    return torch.nn.functional.silu(gate).mul(y)
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 1
 timestep = 8
-out_features = 8
-in_features = 4
+out_features = 8 * 2
+in_features = 8
 
-A = torch.arange(batch_size * timestep * in_features).resize(batch_size, timestep, in_features).float().cuda() # input
-B = torch.arange(out_features * in_features).resize(out_features, in_features).float().cuda() # weights
-
-print(A.size())
-
-print('=== cuda gemm === ')
-
-with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    # C_cuda = cuda_gemm.forward(A, B)
-    C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
-print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+A = torch.randn(batch_size, timestep, in_features).cuda().to(torch.float16) # input
+B = torch.randn(out_features, in_features).cuda().to(torch.float16) # weights
 
 print('=== profiling python gemm ===')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C = gemm_ref(A, B)
+    C = gemm_ref(A, B).float()
+print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+
+print('=== cuda gemm === ')
+
+with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
+    C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features // 2).float()
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print(C.size())
@@ -57,4 +58,4 @@ print(C_cuda.size())
 print(C)
 print(C_cuda)
 
-print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-05))
+print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-02))
