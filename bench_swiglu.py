@@ -46,7 +46,7 @@ def gemm_ref(
 batch_size = 1
 timestep = 8
 out_features = 8 * 2
-in_features = 8
+in_features = 16
 
 A = torch.randn(batch_size, timestep, in_features).cuda().to(torch.float16) # input
 B = torch.randn(out_features, in_features).cuda().to(torch.float16) # weights
