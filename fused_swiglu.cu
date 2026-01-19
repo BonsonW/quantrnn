@@ -27,7 +27,9 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
     void *x,
     void *x_scale,
     void *w0,
+    void *w0_scale,
     void *w1,
+    void *w1_scale,
     void *d0,
     void *d1,
     void *d2, // result
@@ -57,7 +59,7 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         128 / cutlass::sizeof_bits<ElementOutput>::value,
         ElementAccumulator,
         ElementCompute,
-        cutlass::epilogue::thread::ScaleType::NoBetaScaling>;
+        cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling>;
     using EpilogueOutputOp2 = EpilogueLHSActivationAndMul<
         ElementOutput,
         128 / cutlass::sizeof_bits<ElementOutput>::value,
@@ -65,10 +67,14 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         ElementOutput,
         ElementCompute>;
 
-    const ElementCompute alpha0 = ElementCompute(1);
-    const ElementCompute beta0 = ElementCompute(0);
-    const ElementCompute alpha1 = ElementCompute(1);
-    const ElementCompute beta1 = ElementCompute(0);
+    ElementCompute const* alpha0_ptr_array = (ElementCompute const*)x_scale;
+    ElementCompute const* beta0_ptr_array = (ElementCompute const*)w0_scale;
+    ElementCompute const* alpha1_ptr_array = (ElementCompute const*)x_scale;
+    ElementCompute const* beta1_ptr_array = (ElementCompute const*)w1_scale;
+    // const ElementCompute alpha0 = ElementCompute(1);
+    // const ElementCompute beta0 = ElementCompute(0);
+    // const ElementCompute alpha1 = ElementCompute(1);
+    // const ElementCompute beta1 = ElementCompute(0);
 
     using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
     using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
@@ -137,8 +143,12 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         RefC{
             (scalar_t *)d2,
             typename DualGemm::LayoutC::Stride(d_stride_0)},
-        typename DualGemm::EpilogueOutputOp0::Params{alpha0, beta0},
-        typename DualGemm::EpilogueOutputOp1::Params{alpha1, beta1},
+        typename DualGemm::EpilogueOutputOp0::Params(
+            alpha0_ptr_array
+        ),
+        typename DualGemm::EpilogueOutputOp0::Params(
+            alpha1_ptr_array
+        ),
         typename DualGemm::EpilogueOutputOp2::Params{},
         split_k_slices};
 
@@ -212,7 +222,8 @@ torch::Tensor forward(torch::Tensor x, torch::Tensor w) {
 
     dual_gemm_lhs_activation_and_mul_cuda<cutlass::half_t, SiLu>(
         x_quant.values.data_ptr(), x_quant.scale.data_ptr(),
-        w0_quant.values.data_ptr(), w1_quant.values.data_ptr(),
+        w0_quant.values.data_ptr(), w0_quant.scale.data_ptr(),
+        w1_quant.values.data_ptr(), w1_quant.scale.data_ptr(),
         d0.data_ptr(), d1.data_ptr(), d2.data_ptr(),
         B, I, H
     );

@@ -95,37 +95,13 @@ using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 
 // This code section describes the size of MMA op
 using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
 
+// using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;  // <- MMA Op tile M = 16, N = 8, K = 16, for int8
+
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
 
-// This code section describes the epilogue part of the kernel
-using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-    ElementOutput,                                     // <- data type of output matrix
-    128 / cutlass::sizeof_bits<ElementOutput>::value,  // <- the number of elements per vectorized
-                                                       // memory access. For a byte, it's 16
-                                                       // elements. This becomes the vector width of
-                                                       // math instructions in the epilogue too
-    ElementAccumulator,                                // <- data type of accumulator
-    ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
-
 // Number of pipelines you want to use
 constexpr int NumStages = 4;
-
-using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
-                                         LayoutInputA,
-                                         ElementInputB,
-                                         LayoutInputB,
-                                         ElementOutput,
-                                         LayoutOutput,
-                                         ElementAccumulator,
-                                         MMAOp,
-                                         SmArch,
-                                         ShapeMMAThreadBlock,
-                                         ShapeMMAWarp,
-                                         ShapeMMAOp,
-                                         EpilogueOp,
-                                         SwizzleThreadBlock,
-                                         NumStages>;
 
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   cudaError_t result;
@@ -137,10 +113,42 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // _B = _B.permute({2, 1, 0});
 
   int M = A.size(0) * A.size(1);
-  int K = B.size(0);
-  int N = B.size(1);
+  int N = B.size(0);
+  int K = B.size(1);
 
   torch::Tensor D = torch::empty({M, N}).to(torch::kFloat32).cuda(); // result
+
+  ///////////////////////////////////////////////////////////////////////////////////////////
+
+  // This code section describes the epilogue part of the kernel
+  
+  using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+    ElementOutput,                                     // <- data type of output matrix
+    128 / cutlass::sizeof_bits<ElementOutput>::value,  // <- the number of elements per vectorized
+                                                       // memory access. For a byte, it's 16
+                                                       // elements. This becomes the vector width of
+                                                       // math instructions in the epilogue too
+    ElementAccumulator,                                // <- data type of accumulator
+    ElementComputeEpilogue
+  >;  // <- data type for alpha/beta in linear combination function
+
+  using Gemm = cutlass::gemm::device::Gemm<
+    ElementInputA,
+    LayoutInputA,
+    ElementInputB,
+    LayoutInputB,
+    ElementOutput,
+    LayoutOutput,
+    ElementAccumulator,
+    MMAOp,
+    SmArch,
+    ShapeMMAThreadBlock,
+    ShapeMMAWarp,
+    ShapeMMAOp,
+    EpilogueOp,
+    SwizzleThreadBlock,
+    NumStages
+  >;
 
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = { M, N, K };
@@ -169,7 +177,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
 
   cutlass::TensorRef<ElementInputB, LayoutInputB> b_ref(
     B.data_ptr<ElementInputB>(),
-    LayoutInputB(N)   // leading dimension
+    LayoutInputB(K)   // leading dimension
   );
 
   cutlass::TensorRef<ElementOutput, LayoutOutput> d_ref(
