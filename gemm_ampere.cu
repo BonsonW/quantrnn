@@ -167,27 +167,10 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   using GemmOp = typename DefaultGemmConf::Operator;
   using EpilogueOp = typename DefaultGemmConf::EpilogueOutputOp;
 
-  using GemmKernel_ = cutlass::gemm::kernel::DefaultGemm<
-    ElementInput,
-    LayoutInputA,
-    DefaultGemmConf::kAlignmentA,
-    ElementInput,
-    LayoutInputB,
-    DefaultGemmConf::kAlignmentB,
-    ElementOutput,
-    LayoutOutput,
-    ElementAccumulator,
-    OperatorClass,
-    SmArch,
-    ShapeMMAThreadBlock,
-    ShapeMMAWarp,
-    ShapeMMAOp,
-    EpilogueOp,
-    SwizzleThreadBlock,
-    NumStages,
-    true,
-    GemmOp
-  >;
+  using GemmKernel_ = typename cutlass::gemm::kernel::DefaultGemm<ElementInput, cutlass::layout::RowMajor,
+  DefaultGemmConf::kAlignmentA, ElementInput, cutlass::layout::ColumnMajor, DefaultGemmConf::kAlignmentB,
+  ElementOutput, cutlass::layout::RowMajor, ElementAccumulator, OperatorClass, SmArch, ShapeMMAThreadBlock, ShapeMMAWarp,
+  ShapeMMAOp, EpilogueOp, SwizzleThreadBlock, NumStages, true, GemmOp>::GemmKernel;
 
   using AlphaColTileIterator = cutlass::epilogue::threadblock::PredicatedTileIterator<
         cutlass::epilogue::threadblock::OutputTileOptimalThreadMap<
