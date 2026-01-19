@@ -61,6 +61,8 @@ fp32 data by using NVIDIA Ampere architecture.
 #include "gemm_with_epilogue_visitor.h"
 #include <cutlass/gemm/kernel/default_gemm.h>
 
+#include "gemm_universal_base_compat.h"
+
 #include <torch/types.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -153,8 +155,8 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   //   ElementComputeEpilogue
   // >;  // <- data type for alpha/beta in linear combination function
 
-  auto row_scales_device_ptr = (ElementCompute const*)A_quant.scale.data_ptr();
-  auto col_scales_device_ptr = (ElementCompute const*)B_quant.scale.data_ptr();
+  auto alpha_col_ptr = A_quant.scale.data_ptr();
+  auto alpha_row_ptr = B_quant.scale.data_ptr();
 
   using DefaultGemmConf = typename cutlass::gemm::device::DefaultGemmConfiguration<
     OperatorClass,
@@ -196,13 +198,13 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = { M, N, K };
 
-  cutlass::HostTensor<ElementOutput, LayoutOutput> tensor_c( // accumulator
-    problem_size.mn());  // <- Create matrix C with dimensions M x N
+  // cutlass::HostTensor<ElementOutput, LayoutOutput> tensor_c( // accumulator
+  //   problem_size.mn());  // <- Create matrix C with dimensions M x N
 
   // Copy data from host to GPU
   // tensor_a.sync_device();
   // tensor_b.sync_device();
-  tensor_c.sync_device();
+  // tensor_c.sync_device();
   // tensor_d.sync_device();
   // tensor_ref_d.sync_device();
 
@@ -228,24 +230,25 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
     LayoutOutput(N)   // leading dimension
   );
 
-  // Create a tuple of gemm kernel arguments. This is later passed as arguments to launch
-  // instantiated CUTLASS kernel
-  typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
-                                     a_ref,  // <- reference to matrix A on device
-                                     b_ref,  // <- reference to matrix B on device
-                                     tensor_c.device_ref(),  // <- reference to matrix C on device
-                                     d_ref,  // <- reference to matrix D on device
-                                     {alpha, beta},          // <- tuple of alpha and beta
-                                     split_k_slices};        // <- k-dimension split factor
+  using Gemm = cutlass::gemm::device::GemmUniversalBaseCompat<GemmKernel>;
+
+  typename EpilogueOp::Params linearScalingParams; // TODO: right now it's unused (scaling is done in
+                                                    // visitor, no activation needed)
+  typename Gemm::Arguments arguments{cutlass::gemm::GemmUniversalMode::kBatched, {M, N, K}, 1,
+      {a_ref},
+      {b_ref},
+      {reinterpret_cast<ElementCompute*>(alpha_col_ptr), 0},
+      {reinterpret_cast<ElementCompute*>(alpha_row_ptr), 0}, {nullptr, 0},
+      {d_ref}, 0, 0,
+      typename EpilogueVisitor::Arguments(linearScalingParams, 0, 0, 0)};
+
+  Gemm gemm_op;
 
   // Using the arguments, query for extra workspace required for matrix multiplication computation
   size_t workspace_size = Gemm::get_workspace_size(arguments);
 
   // Allocate workspace memory
   cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
-
-  // Instantiate CUTLASS kernel depending on templates
-  Gemm gemm_op;
 
   // Check the problem size is supported or not 
   cutlass::Status status = gemm_op.can_implement(arguments);
