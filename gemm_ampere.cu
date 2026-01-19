@@ -94,7 +94,7 @@ ScaledTensor quantize_tensor(const at::Tensor &t, int dim) {
 using ElementAccumulator = int32_t;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
 using ElementInput = int8_t;                        // <- data type of elements in input matrix
-using ElementOutput = float;                        // <- data type of elements in output matrix D
+using ElementOutput = cutlass::half_t;                        // <- data type of elements in output matrix D
 using ElementCompute = float;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
@@ -140,7 +140,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   int N = B.size(0);
   int K = B.size(1);
 
-  torch::Tensor D = torch::empty({M, N}).to(torch::kFloat).cuda(); // result
+  torch::Tensor D = torch::empty({M, N}).to(torch::kHalf).cuda(); // result
 
   ///////////////////////////////////////////////////////////////////////////////////////////
 
@@ -156,8 +156,8 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   //   ElementComputeEpilogue
   // >;  // <- data type for alpha/beta in linear combination function
 
-  auto alpha_col_ptr = A_quant.scale.data_ptr();
-  auto alpha_row_ptr = B_quant.scale.data_ptr();
+  auto alpha_col_ptr = B_quant.scale.data_ptr();
+  auto alpha_row_ptr = A_quant.scale.data_ptr();
 
   using DefaultGemmConf = typename cutlass::gemm::device::DefaultGemmConfiguration<
     OperatorClass,
@@ -221,7 +221,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   typename EpilogueOp::Params linearScalingParams; // TODO: right now it's unused (scaling is done in
                                                     // visitor, no activation needed)
   typename Gemm::Arguments arguments{
-    cutlass::gemm::GemmUniversalMode::kBatched, {M, N, K}, 1,
+    cutlass::gemm::GemmUniversalMode::kGemm, {M, N, K}, 1,
     {reinterpret_cast<ElementInput*>(A_quant.tensor.data_ptr()), K},
     {reinterpret_cast<ElementInput*>(B_quant.tensor.data_ptr()), K},
     {reinterpret_cast<ElementCompute*>(alpha_col_ptr), 0},

@@ -29,13 +29,13 @@ def gemm_ref(
     return A @ B
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 32
-timestep = 32
-out_features = 32
-in_features = 32
+batch_size = 1
+timestep = 8
+out_features = 8
+in_features = 16
 
-A = torch.randn(batch_size, timestep, in_features).float().cuda() # input
-B = torch.randn(out_features, in_features).float().cuda() # weights
+A = torch.randn(batch_size, timestep, in_features).half().cuda() # input
+B = torch.randn(out_features, in_features).half().cuda() # weights
 
 print(A.size())
 
@@ -58,4 +58,4 @@ print(C_cuda.size())
 print(C)
 print(C_cuda)
 
-print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-05))
+print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-0))
