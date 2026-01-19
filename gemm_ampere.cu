@@ -49,6 +49,7 @@ fp32 data by using NVIDIA Ampere architecture.
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
+#include "epilogue_per_row_per_col_scale_simple.h"
 
 #include "cutlass/util/command_line.h"
 #include "cutlass/util/host_tensor.h"
@@ -67,12 +68,28 @@ fp32 data by using NVIDIA Ampere architecture.
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+struct ScaledTensor {
+  at::Tensor tensor; // int8 tensor
+  at::Tensor scale;  // float scale per slice
+};
+
+ScaledTensor quantize_tensor(const at::Tensor &t, int dim) {
+  auto fp_range = t.abs().amax(dim);
+  constexpr int levels = 256;
+  auto quant_scale = ((levels / 2) / fp_range);
+  auto quant_max = (levels / 2) - 1;
+  auto t_quant = (t * quant_scale.unsqueeze(dim)).round().clip(-quant_max, quant_max);
+  return ScaledTensor{t_quant.to(at::ScalarType::Char), quant_scale.to(at::ScalarType::Float).reciprocal_()};
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 // The code section below describes datatype for input, output matrices and computation between
 // elements in input matrices.
-using ElementAccumulator = float;                   // <- data type of accumulator
+using ElementAccumulator = int32_t;                   // <- data type of accumulator
 using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = float;                        // <- data type of elements in input matrix A
-using ElementInputB = float;                        // <- data type of elements in input matrix B
+using ElementInputA = int8_t;                        // <- data type of elements in input matrix A
+using ElementInputB = int8_t;                        // <- data type of elements in input matrix B
 using ElementOutput = float;                        // <- data type of elements in output matrix D
 
 // The code section below describes matrix layout of input and output matrices. Column Major for
@@ -88,14 +105,19 @@ using MMAOp = cutlass::arch::OpClassTensorOp;
 using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
-using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
-// This code section describes tile size a warp will compute
-using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
-// This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+// using ShapeMMAThreadBlock =
+//     cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
+// // This code section describes tile size a warp will compute
+// using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
+// // This code section describes the size of MMA op
+// // using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
 
-// using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;  // <- MMA Op tile M = 16, N = 8, K = 16, for int8
+// using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 16>;  // <- MMA Op tile M = 16, N = 8, K = 16, for int8
+
+
+using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 64, 64>;
+using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 32, 64>;
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
@@ -106,17 +128,11 @@ constexpr int NumStages = 4;
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   cudaError_t result;
 
-  // quantize and transpose cos its column major
-  // ScaledTensor A_scaled = quantize_tensor(_A, 0);
-  // ScaledTensor B_scaled = quantize_tensor(_B, -1);
-  // _A = _A.permute({1, 0});
-  // _B = _B.permute({2, 1, 0});
-
   int M = A.size(0) * A.size(1);
   int N = B.size(0);
   int K = B.size(1);
 
-  torch::Tensor D = torch::empty({M, N}).to(torch::kFloat32).cuda(); // result
+  torch::Tensor D = torch::empty({M, N}).to(torch::kFloat).cuda(); // result
 
   ///////////////////////////////////////////////////////////////////////////////////////////
 
@@ -170,13 +186,16 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // Split K dimension into 1 partitions
   int split_k_slices = 1;
 
+  ScaledTensor A_quant = quantize_tensor(A, -1);
+  ScaledTensor B_quant = quantize_tensor(B, -1);
+
   cutlass::TensorRef<ElementInputA, LayoutInputA> a_ref(
-    A.data_ptr<ElementInputA>(),
+    A_quant.tensor.data_ptr<ElementInputA>(),
     LayoutInputA(K)   // leading dimension
   );
 
   cutlass::TensorRef<ElementInputB, LayoutInputB> b_ref(
-    B.data_ptr<ElementInputB>(),
+    B_quant.tensor.data_ptr<ElementInputB>(),
     LayoutInputB(K)   // leading dimension
   );
 
