@@ -58,8 +58,10 @@ fp32 data by using NVIDIA Ampere architecture.
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
 #include <cutlass/gemm/kernel/default_gemm.h>
+#include <cutlass/epilogue/threadblock/epilogue_with_visitor.h>
 
 #include "cutlass_ext/gemm_universal_base_compat.h"
+#include "cutlass_ext/epilogue_per_row_per_col.h"
 #include "cutlass_ext/gemm_with_epilogue_visitor.h"
 
 #include <torch/types.h>
@@ -181,18 +183,18 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
             GemmKernel_::Epilogue::OutputTileIterator::kElementsPerAccess, cutlass::sizeof_bits<ElementOutput>::value>,
         ElementCompute>;
 
-    // Epilogue visitor
-    using EpilogueVisitor = typename cutlass::epilogue::threadblock::EpilogueVisitorPerRowPerCol<ShapeMMAThreadBlock,
-        GemmKernel_::kThreadCount, AlphaColTileIterator, typename GemmKernel_::Epilogue::OutputTileIterator,
-        ElementAccumulator, ElementCompute, EpilogueOp>;
+  // Epilogue visitor
+  using EpilogueVisitor = typename cutlass::epilogue::threadblock::EpilogueVisitorPerRowPerCol<ShapeMMAThreadBlock,
+      GemmKernel_::kThreadCount, AlphaColTileIterator, typename GemmKernel_::Epilogue::OutputTileIterator,
+      ElementAccumulator, ElementCompute, EpilogueOp>;
 
-    /// Epilogue
-    using Epilogue = typename cutlass::epilogue::threadblock::EpilogueWithVisitorFromExistingEpilogue<EpilogueVisitor,
-        typename GemmKernel_::Epilogue>::Epilogue;
+  /// Epilogue
+  using Epilogue = typename cutlass::epilogue::threadblock::EpilogueWithVisitorFromExistingEpilogue<EpilogueVisitor,
+      typename GemmKernel_::Epilogue>::Epilogue;
 
-    // GEMM
-    using GemmKernel
-        = cutlass::gemm::kernel::GemmWithEpilogueVisitor<typename GemmKernel_::Mma, Epilogue, SwizzleThreadBlock>;
+  // GEMM
+  using GemmKernel
+      = cutlass::gemm::kernel::GemmWithEpilogueVisitor<typename GemmKernel_::Mma, Epilogue, SwizzleThreadBlock>;
 
   // Create a tuple of problem size for matrix multiplication
   cutlass::gemm::GemmCoord problem_size = { M, N, K };
@@ -214,32 +216,19 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   // Split K dimension into 1 partitions
   int split_k_slices = 1;
 
-  cutlass::TensorRef<ElementInput, LayoutInputA> a_ref(
-    A_quant.tensor.data_ptr<ElementInput>(),
-    LayoutInputA(K)   // leading dimension
-  );
-
-  cutlass::TensorRef<ElementInput, LayoutInputB> b_ref(
-    B_quant.tensor.data_ptr<ElementInput>(),
-    LayoutInputB(K)   // leading dimension
-  );
-
-  cutlass::TensorRef<ElementOutput, LayoutOutput> d_ref(
-    D.data_ptr<ElementOutput>(),
-    LayoutOutput(N)   // leading dimension
-  );
-
   using Gemm = cutlass::gemm::device::GemmUniversalBaseCompat<GemmKernel>;
 
   typename EpilogueOp::Params linearScalingParams; // TODO: right now it's unused (scaling is done in
                                                     // visitor, no activation needed)
-  typename Gemm::Arguments arguments{cutlass::gemm::GemmUniversalMode::kBatched, {M, N, K}, 1,
-      {a_ref},
-      {b_ref},
-      {reinterpret_cast<ElementCompute*>(alpha_col_ptr), 0},
-      {reinterpret_cast<ElementCompute*>(alpha_row_ptr), 0}, {nullptr, 0},
-      {d_ref}, 0, 0,
-      typename EpilogueVisitor::Arguments(linearScalingParams, 0, 0, 0)};
+  typename Gemm::Arguments arguments{
+    cutlass::gemm::GemmUniversalMode::kBatched, {M, N, K}, 1,
+    {reinterpret_cast<ElementInput*>(A_quant.tensor.data_ptr()), K},
+    {reinterpret_cast<ElementInput*>(B_quant.tensor.data_ptr()), K},
+    {reinterpret_cast<ElementCompute*>(alpha_col_ptr), 0},
+    {reinterpret_cast<ElementCompute*>(alpha_row_ptr), 0}, {nullptr, 0},
+    {reinterpret_cast<ElementOutput*>(D.data_ptr()), N}, 0, 0,
+    typename EpilogueVisitor::Arguments(linearScalingParams, 0, 0, 0)
+  };
 
   Gemm gemm_op;
 

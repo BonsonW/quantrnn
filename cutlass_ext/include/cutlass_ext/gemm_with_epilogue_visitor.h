@@ -36,7 +36,7 @@
 #include "cutlass/semaphore.h"
 #include "cutlass/trace.h"
 
-#include "epilogue_per_row_per_col.h"
+#include "cutlass_ext/epilogue_per_row_per_col.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -555,31 +555,6 @@ public:
 
 } // namespace kernel
 } // namespace gemm
-
-namespace epilogue
-{
-namespace threadblock
-{
-    /// Helper to create an EpilogueWithVisitor from an existing epilogue
-    template <typename Visitor_, typename Existing_, bool IterationsUnroll = true>
-    struct EpilogueWithVisitorFromExistingEpilogue  {
-
-        using Epilogue = EpilogueWithVisitor<
-            Visitor_,
-            typename Existing_::Shape,
-            typename Existing_::WarpMmaOperator,
-            Existing_::kPartitionsK,
-            typename Existing_::AccumulatorFragmentIterator,
-            typename Existing_::WarpTileIterator,
-            typename Existing_::SharedLoadIterator,
-            typename Existing_::Padding,
-            Existing_::kFragmentsPerIteration,
-            IterationsUnroll
-        >;
-    };
-    
-} // namespace threadblock
-} // namespace epilogue
 } // namespace cutlass
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
