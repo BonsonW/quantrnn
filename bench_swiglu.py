@@ -9,9 +9,20 @@ repo_root = os.path.dirname(os.path.abspath(__file__))
 
 # if the below code is hanging use this:  rm -r ~/.cache/torch_extensions/
 # Load the CUDA kernel as a python module
-cuda_gemm = load(
-    name='cuda_gemm',
+cuda_func = load(
+    name='cuda_func',
     sources=['main.cpp', 'fused_swiglu.cu'],
+    extra_include_paths=[
+        os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass', 'examples', 'common'),
+        os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
+    ],
+    extra_cuda_cflags=['-O2', '-use_fast_math'],
+)
+
+cuda_quant_gemm = load(
+    name='cuda_quant_gemm',
+    sources=['main.cpp', 'gemm_cutlass.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
@@ -25,7 +36,7 @@ def gemm_ref(
     x,
     w
 ):
-    t = x @ w.t()
+    t = cuda_quant_gemm.forward(w.t().contiguous(), x)
     chunks = t.chunk(2, -1)
     y = chunks[0]
     gate = chunks[1]
@@ -40,16 +51,16 @@ in_features = 8
 A = torch.randn(batch_size, timestep, in_features).cuda().to(torch.float16) # input
 B = torch.randn(out_features, in_features).cuda().to(torch.float16) # weights
 
-print('=== profiling python gemm ===')
+print('=== profiling python func ===')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     C = gemm_ref(A, B).float()
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
-print('=== cuda gemm === ')
+print('=== cuda func === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features // 2).float()
+    C_cuda = cuda_func.forward(A, B).resize(batch_size, timestep, out_features // 2).float()
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print(C.size())

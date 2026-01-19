@@ -11,7 +11,7 @@ repo_root = os.path.dirname(os.path.abspath(__file__))
 # cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 cuda_gemm = load(
     name='cuda_gemm',
-    sources=['main.cpp', 'gemm_ampere.cu'],
+    sources=['main.cpp', 'gemm_cutlass.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
@@ -42,13 +42,14 @@ print('=== cuda gemm === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     # C_cuda = cuda_gemm.forward(A, B)
-    C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
+    C_cuda = cuda_gemm.forward(B.t().contiguous(), A).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
+    # C_cuda = cuda_gemm.forward(A, B).resize(batch_size, timestep, out_features) # transposing because cutlass expects column major
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling python gemm ===')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C = gemm_ref(A, B)
+    C = gemm_ref(A, B.t())
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print(C.size())
