@@ -57,9 +57,9 @@ fp32 data by using NVIDIA Ampere architecture.
 #include "cutlass/util/reference/host/tensor_copy.h"
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
+
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/epilogue/threadblock/epilogue_with_visitor.h>
-
 #include "cutlass_ext/gemm_universal_base_compat.h"
 #include "cutlass_ext/epilogue_per_row_per_col.h"
 #include "cutlass_ext/gemm_with_epilogue_visitor.h"
@@ -125,7 +125,7 @@ using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 32, 64>;
 using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;
 
 // This code section describes how threadblocks are scheduled on GPU
-using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;
+using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<4>;
 
 // Number of pipelines you want to use
 constexpr int NumStages = 4;
@@ -140,7 +140,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
   int N = B.size(0);
   int K = B.size(1);
 
-  torch::Tensor D = torch::empty({M, N}).to(torch::kHalf).cuda(); // result
+  torch::Tensor D = torch::empty({M, N}, A.options()); // result
 
   ///////////////////////////////////////////////////////////////////////////////////////////
 

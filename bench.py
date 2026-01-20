@@ -28,10 +28,10 @@ def gemm_ref(
     return torch.matmul(A, B)
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 1
-timestep = 8
-out_features = 8
-in_features = 4
+batch_size = 2000
+timestep = 833
+out_features = 4096
+in_features = 512
 
 A = torch.arange(batch_size * timestep * in_features).resize(batch_size, timestep, in_features).float().cuda() # input
 B = torch.arange(out_features * in_features).resize(out_features, in_features).float().cuda() # weights

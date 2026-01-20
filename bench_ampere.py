@@ -29,10 +29,10 @@ def gemm_ref(
     return A @ B
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 1
-timestep = 8
-out_features = 8
-in_features = 16
+batch_size = 512
+timestep = 833
+out_features = 4096
+in_features = 512
 
 A = torch.randn(batch_size, timestep, in_features).half().cuda() # input
 B = torch.randn(out_features, in_features).half().cuda() # weights
@@ -52,10 +52,10 @@ with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
     C = gemm_ref(A, B.t())
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
-print(C.size())
-print(C_cuda.size())
+# print(C.size())
+# print(C_cuda.size())
 
-print(C)
-print(C_cuda)
+# print(C)
+# print(C_cuda)
 
 print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-0))
