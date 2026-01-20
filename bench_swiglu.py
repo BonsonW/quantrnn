@@ -14,6 +14,7 @@ cuda_func = load(
     sources=['main.cpp', 'fused_swiglu.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass_ext', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
         os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
     ],
@@ -22,9 +23,10 @@ cuda_func = load(
 
 cuda_quant_gemm = load(
     name='cuda_quant_gemm',
-    sources=['main.cpp', 'gemm_cutlass.cu'],
+    sources=['main.cpp', 'gemm_ampere.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
+        os.path.join(repo_root, 'cutlass_ext', 'include'),
         os.path.join(repo_root, 'cutlass', 'examples', 'common'),
         os.path.join(repo_root, 'cutlass', 'tools', 'util', 'include'),
     ],
@@ -36,7 +38,8 @@ def gemm_ref(
     x,
     w
 ):
-    t = cuda_quant_gemm.forward(w.t().contiguous(), x)
+    t = x @ w.t()
+    # t = cuda_quant_gemm.forward(x, w)
     chunks = t.chunk(2, -1)
     y = chunks[0]
     gate = chunks[1]
@@ -44,8 +47,8 @@ def gemm_ref(
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 1
-timestep = 8
-out_features = 8 * 2
+timestep = 4
+out_features = 16 * 2
 in_features = 16
 
 A = torch.randn(batch_size, timestep, in_features).cuda().to(torch.float16) # input

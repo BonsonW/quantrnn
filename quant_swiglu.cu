@@ -25,8 +25,11 @@ using SiLu = cutlass::epilogue::thread::SiLu<T>;
 template <typename scalar_t, template <typename> typename ActivationFn>
 static void dual_gemm_lhs_activation_and_mul_cuda(
     void *x,
+    void *x_scale,
     void *w0,
+    void *w0_scale,
     void *w1,
+    void *w1_scale,
     void *d0,
     void *d1,
     void *d2, // result
@@ -46,15 +49,17 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
     constexpr int kStages = 3;
     constexpr bool kSplitKSerial = false;
 
+    using ElementInput = int8_t;
+    // using ElementAlpha = float;
     using ElementOutput = scalar_t;
-    using ElementAccumulator = float;
+    using ElementAccumulator = int32_t;
     using ElementCompute = float;
     using EpilogueOutputOp01 = cutlass::epilogue::thread::LinearCombination<
         ElementOutput,
         128 / cutlass::sizeof_bits<ElementOutput>::value,
         ElementAccumulator,
         ElementCompute,
-        cutlass::epilogue::thread::ScaleType::NoBetaScaling>;
+        cutlass::epilogue::thread::ScaleType::OnlyAlphaPerChannelScaling>;
     using EpilogueOutputOp2 = EpilogueLHSActivationAndMul<
         ElementOutput,
         128 / cutlass::sizeof_bits<ElementOutput>::value,
@@ -62,10 +67,14 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         ElementOutput,
         ElementCompute>;
 
-    const ElementCompute alpha0 = ElementCompute(1);
-    const ElementCompute beta0 = ElementCompute(0);
-    const ElementCompute alpha1 = ElementCompute(1);
-    const ElementCompute beta1 = ElementCompute(0);
+    // ElementCompute const* alpha0_ptr_array = (ElementCompute const*)x_scale;
+    ElementCompute const* alpha0_ptr_array = (ElementCompute const*)w0_scale;
+    // ElementCompute const* alpha2_ptr_array = (ElementCompute const*)x_scale;
+    ElementCompute const* alpha1_ptr_array = (ElementCompute const*)w1_scale;
+    // const ElementCompute alpha0 = ElementCompute(1);
+    // const ElementCompute beta0 = ElementCompute(0);
+    // const ElementCompute alpha1 = ElementCompute(1);
+    // const ElementCompute beta1 = ElementCompute(0);
 
     using ThreadblockShape = cutlass::gemm::GemmShape<128, 64, 32>;
     using WarpShape = cutlass::gemm::GemmShape<64, 32, 32>;
@@ -77,9 +86,10 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
     using ArchTag = cutlass::arch::Sm80;
 
     using DualGemm = cutlass::gemm::device::DualGemm<
-        scalar_t,
+        ElementInput,
+        // float,
         cutlass::layout::RowMajor,
-        scalar_t,
+        ElementInput,
         cutlass::layout::ColumnMajor,
         cutlass::layout::ColumnMajor,
         ElementOutput,
@@ -114,17 +124,17 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         cutlass::gemm::DualGemmMode::kGemm,
         problem_size,
         RefA{
-            (scalar_t *)x,
+            (ElementInput *)x,
             typename DualGemm::LayoutA::Stride(x_stride_0)},
         RefB0{
-            (scalar_t *)w0,
+            (ElementInput *)w0,
             typename DualGemm::LayoutB0::Stride(w_stride_0)},
         ref_b0,
         RefC{
             (scalar_t *)d0,
             typename DualGemm::LayoutC::Stride(d_stride_0)},
         RefB1{
-            (scalar_t *)w1,
+            (ElementInput *)w1,
             typename DualGemm::LayoutB1::Stride(w_stride_0)},
         ref_b1,
         RefC{
@@ -133,8 +143,12 @@ static void dual_gemm_lhs_activation_and_mul_cuda(
         RefC{
             (scalar_t *)d2,
             typename DualGemm::LayoutC::Stride(d_stride_0)},
-        typename DualGemm::EpilogueOutputOp0::Params{alpha0, beta0},
-        typename DualGemm::EpilogueOutputOp1::Params{alpha1, beta1},
+        typename DualGemm::EpilogueOutputOp0::Params(
+            alpha0_ptr_array
+        ),
+        typename DualGemm::EpilogueOutputOp0::Params(
+            alpha1_ptr_array
+        ),
         typename DualGemm::EpilogueOutputOp2::Params{},
         split_k_slices};
 
@@ -192,6 +206,8 @@ torch::Tensor forward(torch::Tensor x, torch::Tensor w) {
     auto d1 = torch::zeros(B * H, x.options()); // acc 1 ?
     auto d2 = torch::zeros({x.size(0), x.size(1), H}, x.options()); // output tensor
 
+    auto x_quant = quantize_tensor(x, -1);
+
     // might have construct some weird fucked up view before quantizing
     // const int C = params.d_model;
     // const int E = params.dim_feedforward * 2;
@@ -200,11 +216,15 @@ torch::Tensor forward(torch::Tensor x, torch::Tensor w) {
     //     .view({C, 2, E / 2, 1})
     //     .transpose(1, 2) // or not??
     //     .reshape({C, E}); // should just put this in to chat jippity and see what it thinks
-    auto weights = w.chunk(2, 0);
+    auto w_quant = quantize_tensor(w, -1);
+    auto weights = w_quant.values.chunk(2, 0); 
+    // auto w0_quant = quantize_tensor(weights[0], -1);
+    // auto w1_quant = quantize_tensor(weights[1], -1);
+
     dual_gemm_lhs_activation_and_mul_cuda<cutlass::half_t, SiLu>(
-        x.data_ptr(),
-        weights[0].data_ptr(),
-        weights[1].data_ptr(),
+        x_quant.values.data_ptr(), x_quant.scale.data_ptr(),
+        weights[0].data_ptr(), w_quant.scale.data_ptr(),
+        weights[1].data_ptr(), w_quant.scale.data_ptr(),
         d0.data_ptr(), d1.data_ptr(), d2.data_ptr(),
         B, I, H
     );
