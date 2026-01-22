@@ -113,14 +113,14 @@ using OperatorClass = cutlass::arch::OpClassTensorOp;
 using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
-// using ThreadblockShape =
+// using ShapeMMAThreadBlock =
 //     cutlass::gemm::GemmShape<128, 128, 16>;  // <- threadblock tile M = 128, N = 128, K = 16
 // // This code section describes tile size a warp will compute
-// using WarpShape = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
+// using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 16>;  // <- warp tile M = 64, N = 64, K = 16
 // // This code section describes the size of MMA op
-// // using InstructionShape = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
+// // using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;  // <- MMA Op tile M = 16, N = 8, K = 8
 
-// using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;  // <- MMA Op tile M = 16, N = 8, K = 16, for int8
+// using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 16>;  // <- MMA Op tile M = 16, N = 8, K = 16, for int8
 
 #define checkCudaError() { gpuAssert(__FILE__, __LINE__); }
 
@@ -132,7 +132,15 @@ static inline void gpuAssert(const char *file, int line){
    }
 }
 
+using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 64, 64>;
+using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 32, 64>;
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 32>;
 
+// This code section describes how threadblocks are scheduled on GPU
+using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<4>;
+
+// Number of pipelines you want to use
+constexpr int NumStages = 4;
 
 void quant_gemm_cuda(
   void *a_quant,
@@ -144,12 +152,6 @@ void quant_gemm_cuda(
   int N,
   int K
 ) {
-  constexpr int Stages = 3;
-  using ThreadblockShape = cutlass::gemm::GemmShape<256, 128, 64>;
-  using WarpShape = cutlass::gemm::GemmShape<64, 64, 64>;
-  using InstructionShape = cutlass::gemm::GemmShape<16, 8, 32>;
-  using ThreadblockSwizzle = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;
-
   using DefaultGemmConf = typename cutlass::gemm::device::DefaultGemmConfiguration<
     OperatorClass,
     SmArch,
@@ -161,9 +163,9 @@ void quant_gemm_cuda(
   using EpilogueOp = typename DefaultGemmConf::EpilogueOutputOp;
 
   using GemmKernel_ = typename cutlass::gemm::kernel::DefaultGemm<ElementInput, cutlass::layout::RowMajor,
-    DefaultGemmConf::kAlignmentA, ElementInput, cutlass::layout::ColumnMajor, DefaultGemmConf::kAlignmentB,
-    ElementOutput, cutlass::layout::RowMajor, ElementAccumulator, OperatorClass, SmArch, ThreadblockShape, WarpShape,
-    InstructionShape, EpilogueOp, ThreadblockSwizzle, Stages, true, GemmOp>::GemmKernel;
+                                                                  DefaultGemmConf::kAlignmentA, ElementInput, cutlass::layout::ColumnMajor, DefaultGemmConf::kAlignmentB,
+                                                                  ElementOutput, cutlass::layout::RowMajor, ElementAccumulator, OperatorClass, SmArch, ShapeMMAThreadBlock, ShapeMMAWarp,
+                                                                  ShapeMMAOp, EpilogueOp, SwizzleThreadBlock, NumStages, true, GemmOp>::GemmKernel;
 
   using AlphaColTileIterator = cutlass::epilogue::threadblock::PredicatedTileIterator<
       cutlass::epilogue::threadblock::OutputTileOptimalThreadMap<
@@ -174,41 +176,35 @@ void quant_gemm_cuda(
       ElementCompute>;
 
   // Epilogue visitor
-  using EpilogueVisitor = typename cutlass::epilogue::threadblock::EpilogueVisitorPerRowPerCol<ThreadblockShape,
-    GemmKernel_::kThreadCount, AlphaColTileIterator, typename GemmKernel_::Epilogue::OutputTileIterator,
-    ElementAccumulator, ElementCompute, EpilogueOp>;
+  using EpilogueVisitor = typename cutlass::epilogue::threadblock::EpilogueVisitorPerRowPerCol<ShapeMMAThreadBlock,
+                                                                                               GemmKernel_::kThreadCount, AlphaColTileIterator, typename GemmKernel_::Epilogue::OutputTileIterator,
+                                                                                               ElementAccumulator, ElementCompute, EpilogueOp>;
 
   /// Epilogue
   using Epilogue = typename cutlass::epilogue::threadblock::EpilogueWithVisitorFromExistingEpilogue<EpilogueVisitor,
-    typename GemmKernel_::Epilogue>::Epilogue;
+                                                                                                    typename GemmKernel_::Epilogue>::Epilogue;
 
   // GEMM
-  using GemmKernel = cutlass::gemm::kernel::GemmWithEpilogueVisitor<typename GemmKernel_::Mma, Epilogue, ThreadblockSwizzle>;
+  using GemmKernel = cutlass::gemm::kernel::GemmWithEpilogueVisitor<typename GemmKernel_::Mma, Epilogue, SwizzleThreadBlock>;
 
   // // Create a tuple of problem size for matrix multiplication
-  cutlass::gemm::GemmCoord problem_size = { M, N, K };
+  // cutlass::gemm::GemmCoord problem_size = { M, N, K };
 
   // // Initialize alpha and beta for dot product computation
   // ElementComputeEpilogue alpha = ElementComputeEpilogue(1.0);
   // ElementComputeEpilogue beta = ElementComputeEpilogue(0.0);
 
-  // Split K dimension into 1 partitions
-  int split_k_slices = 1;
+  // // Split K dimension into 1 partitions
+  // int split_k_slices = 1;
 
   using Gemm = cutlass::gemm::device::GemmUniversalBaseCompat<GemmKernel>;
 
   typename EpilogueOp::Params linearScalingParams; // TODO: right now it's unused (scaling is done in visitor, no activation needed)
   typename Gemm::Arguments arguments{
-    cutlass::gemm::GemmUniversalMode::kGemm, problem_size, split_k_slices,
-    {reinterpret_cast<ElementInput *>(a_quant), K},
-    {reinterpret_cast<ElementInput *>(b_quant), K},
-    {reinterpret_cast<ElementCompute *>(b_scale), 0},
-    {reinterpret_cast<ElementCompute *>(a_scale), 0}, {nullptr, 0},
-    {reinterpret_cast<ElementOutput *>(o_gpu), N}, 0, 0,
-    typename EpilogueVisitor::Arguments(linearScalingParams, 0, 0, 0)
-  };
+    cutlass::gemm::GemmUniversalMode::kGemm, {M, N, K}, 1, {reinterpret_cast<ElementInput *>(a_quant), K}, {reinterpret_cast<ElementInput *>(b_quant), K}, {reinterpret_cast<ElementCompute *>(b_scale), 0}, {reinterpret_cast<ElementCompute *>(a_scale), 0}, {nullptr, 0}, {reinterpret_cast<ElementOutput *>(o_gpu), N}, 0, 0, typename EpilogueVisitor::Arguments(linearScalingParams, 0, 0, 0)};
 
   Gemm gemm_op;
+
   // Using the arguments, query for extra workspace required for matrix multiplication computation
   uint8_t *workspace;
   cudaMalloc((void **)&workspace, sizeof(uint8_t) * Gemm::get_workspace_size(arguments));
@@ -225,11 +221,11 @@ void quant_gemm_cuda(
   status = gemm_op();
   CUTLASS_CHECK(status);
 
-  // cudaDeviceSynchronize();
-  // checkCudaError();
+  cudaDeviceSynchronize();
+  checkCudaError();
 
-  // cudaFree(workspace);
-  // checkCudaError();
+  cudaFree(workspace);
+  checkCudaError();
 }
 
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
@@ -244,7 +240,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
 
   quant_gemm_cuda(
     A_quant.tensor.data_ptr(),
-    B_quant.tensor.data_ptr(),
+    A_quant.tensor.data_ptr(),
     A_quant.scale.data_ptr(),
     B_quant.scale.data_ptr(),
     D.data_ptr(),

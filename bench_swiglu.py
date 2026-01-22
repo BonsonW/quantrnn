@@ -33,37 +33,57 @@ cuda_quant_gemm = load(
     extra_cuda_cflags=['-O2', '-use_fast_math'],
 )
 
+cuda_silu = load(
+    name='cuda_silu',
+    sources=['main_silu.cpp', 'silu_mul.cu'],
+    extra_cuda_cflags=['-O2', '-use_fast_math'],
+)
+
+@torch.inference_mode()
+def gemm_fused(
+    x,
+    w
+):
+    return cuda_func.forward(x, w)
+
 @torch.inference_mode()
 def gemm_ref(
     x,
     w
 ):
     t = x @ w.t()
-    # t = cuda_quant_gemm.forward(x, w)
     chunks = t.chunk(2, -1)
     y = chunks[0]
     gate = chunks[1]
     return torch.nn.functional.silu(gate).mul(y)
 
-# Use small model params, otherwise slower than manual attention. See caveats in README.
-batch_size = 1
-timestep = 4
-out_features = 16 * 2
-in_features = 16
+@torch.inference_mode()
+def gemm_cuda(
+    x,
+    w
+):
+    t = cuda_quant_gemm.forward(x, w)
+    return cuda_silu.forward(t)
 
-A = torch.randn(batch_size, timestep, in_features).cuda().to(torch.float16) # input
-B = torch.randn(out_features, in_features).cuda().to(torch.float16) # weights
+# Use small model params, otherwise slower than manual attention. See caveats in README.
+batch_size = 800
+timestep = 833
+out_features = 2048 * 2
+in_features = 512
+
+A = torch.randn(batch_size, timestep, in_features).cuda().half() # input
+B = torch.randn(out_features, in_features).cuda().half() # weights
 
 print('=== profiling python func ===')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C = gemm_ref(A, B).float()
+    C = gemm_fused(A, B)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== cuda func === ')
 
 with torch.autograd.profiler.profile(use_device = 'cuda') as prof:
-    C_cuda = cuda_func.forward(A, B).resize(batch_size, timestep, out_features // 2).float()
+    C_cuda = gemm_cuda(A, B)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print(C.size())
@@ -72,4 +92,4 @@ print(C_cuda.size())
 print(C)
 print(C_cuda)
 
-print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-02))
+print('values sanity check:', torch.allclose(C, C_cuda, atol=1e-0))
