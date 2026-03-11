@@ -20,10 +20,11 @@ __global__ void rmsnorm_kernel(
     float eps
 ) {
     int row = blockIdx.x;  // Which sequence/batch element
+    int idx = threadIdx.x;
     
     if (row >= batch_size) return;
     
-    const half* x = input + row * hidden_dim;
+    const half* inp = input + row * hidden_dim;
     const half* res = residual + row * hidden_dim;
     half* y = output + row * hidden_dim;
     
@@ -31,12 +32,8 @@ __global__ void rmsnorm_kernel(
     __shared__ float shared_sum[32];  // For warp reduction
     
     float thread_sum = 0.0f;
-    float x_new; // if this for loop happens more than once it will break, in this case we need to cache more than one x
-    for (int i = threadIdx.x; i < hidden_dim; i += blockDim.x) {
-        float val = __half2float(x[i]) + ( __half2float(res[i]) * alpha);
-        x_new = val;
-        thread_sum += val * val;
-    }
+    float inp_new = __half2float(inp[idx]) + ( __half2float(res[idx]) * alpha);
+    thread_sum += inp_new * inp_new;
     
     // Warp-level reduction
     int warp_id = threadIdx.x / 32;
@@ -75,40 +72,9 @@ __global__ void rmsnorm_kernel(
     float rms_inv = rms_shared;
     
     // Step 2: Normalize and apply weight
-    for (int i = threadIdx.x; i < hidden_dim; i += blockDim.x) {
-        float w = __half2float(weight[i]);
-        y[i] = __float2half(x_new * rms_inv * w);
-    }
+    float w = __half2float(weight[idx]);
+    y[idx] = __float2half(inp_new * rms_inv * w);
 }
-
-void rmsnorm_cuda(
-    const void* input,
-    const void* residual,
-    const void* weight,
-    void* output,
-    int MN,
-    int K,
-    float alpha,
-    float eps
-) {
-    cudaError_t result;
-    
-    int threads = K; // 512
-    int blocks = MN;
-    
-    rmsnorm_kernel<<<blocks, threads>>>(
-        (half *)input, (half *)residual, (half *)weight, (half *)output, MN, K, alpha, eps
-    );
-
-    result = cudaDeviceSynchronize();
-    if (result != cudaSuccess) {
-        std::cerr << "device synchronize failed: "
-        << cudaGetErrorString(result) << std::endl;
-
-        exit(1);
-    }
-}
-
 torch::Tensor forward(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     auto MN = A.size(0) * A.size(1);
     auto K = A.size(2);

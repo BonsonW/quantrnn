@@ -7,36 +7,52 @@
 #include <cuda.h>
 #include <ATen/Functions.h>
 
+struct tensor_quant {
+    at::Tensor tensor; // int8 tensor
+    at::Tensor scale;  // float scale per slice, reciprocal pre-applied
+};
+
+inline tensor_quant quantize_tensor(const at::Tensor &x, int dim) {
+    auto fp_range = x.abs().amax(dim);
+    auto i_range = 256 / 2;
+    auto quant_scale = (i_range / fp_range);
+    auto quant_max = i_range - 1;
+    auto x_quant = (x * quant_scale.unsqueeze(dim)).round().clip(-quant_max, quant_max);
+    return tensor_quant {
+        x_quant.to(torch::kInt8).contiguous(),
+        quant_scale.to(torch::kFloat32).reciprocal_().contiguous()
+    };
+}
+
 // RMSNorm kernel: y = (x / RMS(x)) * weight
 // where RMS(x) = sqrt(mean(x^2) + eps)
 __global__ void rmsnorm_kernel(
     const half* input,
-    const half* residual,
     const half* weight,
-    half* output,
+    int8_t* residual,
+    float* residual_scale,
     int batch_size,
     int hidden_dim,
     float alpha,
     float eps
 ) {
     int row = blockIdx.x;  // Which sequence/batch element
+    int idx = threadIdx.x;
+    assert(idx < hidden_dim);
     
     if (row >= batch_size) return;
     
-    const half* x = input + row * hidden_dim;
-    const half* res = residual + row * hidden_dim;
-    half* y = output + row * hidden_dim;
+    const half* inp = input + row * hidden_dim;
+    int8_t* res = residual + row * hidden_dim;
+    float* res_scale = residual_scale + row;
+    float w = __half2float(weight[idx]);
     
     // Step 1: Compute sum of squares using shared memory reduction
     __shared__ float shared_sum[32];  // For warp reduction
     
     float thread_sum = 0.0f;
-    float x_new; // if this for loop happens more than once it will break, in this case we need to cache more than one x
-    for (int i = threadIdx.x; i < hidden_dim; i += blockDim.x) {
-        float val = __half2float(res[i]) + (__half2float(x[i]) * alpha);
-        x_new = val;
-        thread_sum += val * val;
-    }
+    float val = __half2float(inp[idx]) + (((float)res[idx] * (*res_scale)) * alpha);
+    thread_sum += val * val;
     
     // Warp-level reduction
     int warp_id = threadIdx.x / 32;
@@ -73,31 +89,68 @@ __global__ void rmsnorm_kernel(
     __syncthreads();
     
     float rms_inv = rms_shared;
+
+    // Step 2: Find max absolute value for output quantization
+    __shared__ float shared_max[32];
     
-    // Step 2: Normalize and apply weight
-    for (int i = threadIdx.x; i < hidden_dim; i += blockDim.x) {
-        float w = __half2float(weight[i]);
-        y[i] = __float2half(x_new * rms_inv * w);
+    float thread_max = 0.0f;
+    float normalized = val * rms_inv * w;
+    thread_max = fmaxf(thread_max, fabsf(normalized));
+    
+    // Reduce to find max
+    for (int offset = 16; offset > 0; offset /= 2) {
+        thread_max = fmaxf(thread_max, __shfl_down_sync(0xffffffff, thread_max, offset));
     }
+    
+    if (lane_id == 0) {
+        shared_max[warp_id] = thread_max;
+    }
+    __syncthreads();
+    
+    float abs_max = 0.0f;
+    if (threadIdx.x < 32) {
+        int num_warps = (blockDim.x + 31) / 32;
+        abs_max = (threadIdx.x < num_warps) ? shared_max[threadIdx.x] : 0.0f;
+        
+        for (int offset = 16; offset > 0; offset /= 2) {
+            abs_max = fmaxf(abs_max, __shfl_down_sync(0xffffffff, abs_max, offset));
+        }
+    }
+    
+    // write to quant scale
+    __shared__ float quant_scale_shared;
+    if (threadIdx.x == 0) {
+        quant_scale_shared = (abs_max > 0.0f) ? (127.0f / abs_max) : 1.0f;
+        *res_scale = 1.0f / quant_scale_shared;
+    }
+    __syncthreads();
+    
+    
+    // clamp and write quantized norm
+    float quant_scale = quant_scale_shared;
+    int quantized = __float2int_rn(normalized * quant_scale);
+    quantized = max(-127, min(127, quantized));
+    res[idx] = (int8_t)quantized;
 }
 
 void rmsnorm_cuda(
     const void* input,
-    const void* residual,
     const void* weight,
-    void* output,
+    const void* residual,
+    const void* residual_scale,
     int MN,
     int K,
     float alpha,
     float eps
 ) {
     cudaError_t result;
+    assert(K <= 1024);
     
-    int threads = K; // 512
+    int threads = K;
     int blocks = MN;
     
     rmsnorm_kernel<<<blocks, threads>>>(
-        (half *)input, (half *)residual, (half *)weight, (half *)output, MN, K, alpha, eps
+        (half *)input, (half *)weight, (int8_t *)residual, (float *)residual_scale, MN, K, alpha, eps
     );
 
     result = cudaDeviceSynchronize();
@@ -113,20 +166,21 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     auto MN = A.size(0) * A.size(1);
     auto K = A.size(2);
 
+    auto b_quant = quantize_tensor(B, -1);
+
     float eps = 0.00001;
     float alpha = 2.44921875;
 
-    auto o = torch::empty({A.size(0), A.size(1), K}, A.options());
     rmsnorm_cuda(
-        (half *)A.data_ptr(),
-        (half *)B.data_ptr(),
-        (half *)C.data_ptr(),
-        (half *)o.data_ptr(),
+        A.data_ptr(),
+        C.data_ptr(),
+        b_quant.tensor.data_ptr(),
+        b_quant.scale.data_ptr(),
         MN,
         K,
         alpha,
         eps
     );
 
-    return o;
+    return (b_quant.tensor.to(at::kFloat) * b_quant.scale.unsqueeze(-1)).to(at::kHalf);
 }

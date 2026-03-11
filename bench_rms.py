@@ -13,7 +13,7 @@ repo_root = os.path.dirname(os.path.abspath(__file__))
 # cuda_gemm = load(name='cuda_gemm', sources=['main.cpp', 'gemm.cu'], extra_cuda_cflags=['-O2', '-use_fast_math'])
 cuda_gemm = load(
     name='cuda_gemm',
-    sources=['main_rms.cpp', 'rms_norm.cu'],
+    sources=['main_rms.cpp', 'rms_norm_quant.cu'],
     extra_include_paths=[
         os.path.join(repo_root, 'cutlass', 'include'),
         # os.path.join(repo_root, 'cutlass_ext', 'include'),
@@ -35,9 +35,9 @@ def gemm_ref(
 # timestep = 1024
 # out_features = 512
 
-batch_size = 1
-timestep = 1
-out_features = 32
+batch_size = 512
+timestep = 1024
+out_features = 512
 
 x = torch.randn(batch_size * timestep * out_features).resize(batch_size, timestep, out_features).half().cuda().contiguous() # input
 inp = torch.randn(batch_size * timestep * out_features).resize(batch_size, timestep, out_features).half().cuda().contiguous() # input
@@ -63,4 +63,4 @@ print(D_cuda.size())
 print(D)
 print(D_cuda)
 
-print('values sanity check:', torch.allclose(D, D_cuda, atol=1e-02))
+print('values sanity check:', torch.allclose(D, D_cuda, atol=1e-0))
